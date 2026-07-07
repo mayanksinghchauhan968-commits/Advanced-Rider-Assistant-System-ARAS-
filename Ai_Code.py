@@ -41,7 +41,7 @@ from gtts import gTTS
 # CONFIG
 # ══════════════════════════════════════════
 
-GROQ_API_KEY      = ""
+GROQ_API_KEY      = "Your_API_KEY"
 
 TRIGGER_HOST      = "0.0.0.0"
 TRIGGER_PORT      = 6000              # ESP32-S3 status connection
