@@ -29,8 +29,8 @@
 #define WIFI_PASSWORD  "WIFI_PASSWORD"
 
 // ── Telegram Settings ─────────────────────
-#define BOT_TOKEN  "8792328469:AAHUQoZSGpPWcwWtOiZXQ5700fJiDYqoEWY"
-#define CHAT_ID    "1851991797"
+#define BOT_TOKEN  "YOUR_BOT_TOKEN"
+#define CHAT_ID    "YOUR_CHAT_ID"
 
 // ── Pin Definitions ───────────────────────
 #define IR_SENSOR_PIN  21
