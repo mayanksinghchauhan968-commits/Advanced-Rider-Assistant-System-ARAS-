@@ -25,8 +25,8 @@
 #include <esp_wifi.h>
 
 // ── WiFi Settings ─────────────────────────
-#define WIFI_SSID      "Yash"
-#define WIFI_PASSWORD  "yash9526"
+#define WIFI_SSID      "WIFI_USERNAME"
+#define WIFI_PASSWORD  "WIFI_PASSWORD"
 
 // ── Telegram Settings ─────────────────────
 #define BOT_TOKEN  "8792328469:AAHUQoZSGpPWcwWtOiZXQ5700fJiDYqoEWY"
