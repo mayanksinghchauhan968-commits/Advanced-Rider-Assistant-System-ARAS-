@@ -4,7 +4,7 @@
 
 ---
 
-## 📌 Overview
+## Overview
 
 This project is a complete smart riding safety system consisting of **two ESP32 boards** and a **Python AI Server**.
 
@@ -16,9 +16,9 @@ Additionally, the helmet includes an AI-powered multilingual voice assistant cap
 
 ---
 
-# 🚀 Features
+#  Features
 
-### 🪖 Smart Helmet
+###  Smart Helmet
 
 * Helmet detection using IR sensor
 * Strap detection
@@ -31,7 +31,7 @@ Additionally, the helmet includes an AI-powered multilingual voice assistant cap
 * Heartbeat monitoring
 * Helmet authentication
 
-### 🏍 Scooter Unit
+###  Scooter Unit
 
 * Wireless engine authentication
 * Relay-controlled ignition lock
@@ -40,7 +40,7 @@ Additionally, the helmet includes an AI-powered multilingual voice assistant cap
 * Audible proximity warning
 * Automatic engine blocking if communication is lost
 
-### 🤖 AI Voice Assistant
+###  AI Voice Assistant
 
 * Wake word detection ("AI")
 * English
@@ -58,7 +58,7 @@ Additionally, the helmet includes an AI-powered multilingual voice assistant cap
 
 ---
 
-# 🏗 System Architecture
+#  System Architecture
 
 ```
                 ┌────────────────────┐
@@ -86,7 +86,7 @@ Additionally, the helmet includes an AI-powered multilingual voice assistant cap
 
 ---
 
-# ⚙ Hardware Used
+#  Hardware Used
 
 ## Helmet Unit
 
@@ -118,7 +118,7 @@ Additionally, the helmet includes an AI-powered multilingual voice assistant cap
 
 ---
 
-# 🛠 Working Principle
+#  Working Principle
 
 ## 1. Helmet Authentication
 
@@ -251,7 +251,7 @@ Supported commands include:
 
 ---
 
-# 📡 Communication
+#  Communication
 
 ## ESP-NOW
 
@@ -298,7 +298,7 @@ Purpose:
 
 ---
 
-# 🧠 State Machine
+# State Machine
 
 ```
 STATE_IDLE
@@ -338,17 +338,8 @@ SOS Sent
 
 ---
 
-# 📚 Software Requirements
 
-Arduino IDE
-
-Python 3.10+
-
-ESP32 Board Package
-
----
-
-# 📦 Arduino Libraries
+#  Arduino Libraries
 
 * WiFi
 * ESP-NOW
@@ -360,7 +351,7 @@ ESP32 Board Package
 
 ---
 
-# 🐍 Python Libraries
+#  Python Libraries
 
 ```
 pip install
@@ -382,7 +373,7 @@ and ensure it is added to your system PATH.
 
 ---
 
-# 🔧 Configuration
+#  Configuration
 
 Before running the project, update the following:
 
@@ -395,7 +386,7 @@ Before running the project, update the following:
 
 ---
 
-# ▶ Running the Project
+#  Running the Project
 
 ## Step 1
 
@@ -431,7 +422,7 @@ python smart_helmet_server.py
 
 ---
 
-# 🎯 Applications
+# Applications
 
 * Smart Helmets
 * Rider Safety
@@ -444,7 +435,7 @@ python smart_helmet_server.py
 
 ---
 
-# 🔮 Future Improvements
+#  Future Improvements
 
 * GSM-based emergency calling
 * Cloud dashboard
