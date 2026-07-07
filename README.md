@@ -114,7 +114,7 @@ Additionally, the helmet includes an AI-powered multilingual voice assistant cap
 
 * Laptop / PC
 * Bluetooth Headset
-* Python 3.10+
+* Python 3.14
 
 ---
 
