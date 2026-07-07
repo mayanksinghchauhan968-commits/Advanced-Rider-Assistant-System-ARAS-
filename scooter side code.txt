@@ -1,0 +1,233 @@
+// ==========================================
+// SCOOTER ESP32 — FINAL CODE
+// ESP-NOW Receiver + Relay + VL53L0X ToF Sensor + Buzzer
+//
+// Engine ALLOWED = RELAY LOW
+// Engine BLOCKED = RELAY HIGH
+// ==========================================
+
+#include <esp_now.h>
+#include <WiFi.h>
+#include <esp_wifi.h>
+#include <Wire.h>
+#include <Adafruit_VL53L0X.h>
+
+// ── Configuration ─────────────────────────
+const bool TEST_MODE = false;
+
+// ── Pin Definitions ───────────────────────
+#define RELAY_PIN    5
+#define BUZZER       23
+#define PUSH_BUTTON  27
+
+// VL53L0X I2C Pins
+#define SDA_PIN      2
+#define SCL_PIN      15
+
+// ── VL53L0X Object ────────────────────────
+Adafruit_VL53L0X lox = Adafruit_VL53L0X();
+
+// ── Data Structure ────────────────────────
+typedef struct struct_message {
+  bool buzzerON;
+} struct_message;
+
+struct_message data;
+
+// ── Variables ─────────────────────────────
+bool helmetAuthorized = false;
+unsigned long lastMsgTime = 0;
+
+#define TIMEOUT_MS 8000
+
+// ──────────────────────────────────────────
+// ESP-NOW Receive Callback
+// ──────────────────────────────────────────
+void OnDataRecv(const esp_now_recv_info *info,
+                const uint8_t *incomingData,
+                int len) {
+
+  memcpy(&data, incomingData, sizeof(data));
+
+  helmetAuthorized = data.buzzerON;
+  lastMsgTime = millis();
+
+  Serial.println();
+  Serial.println("==============================");
+  Serial.println("📡 Message from Helmet");
+  Serial.print("buzzerON    : ");
+  Serial.println(data.buzzerON ? "TRUE" : "FALSE");
+  Serial.print("Auth Status : ");
+  Serial.println(helmetAuthorized ? "✅ AUTHORIZED" : "❌ NOT AUTHORIZED");
+
+  if (helmetAuthorized) {
+    digitalWrite(RELAY_PIN, LOW);
+    digitalWrite(BUZZER, LOW);
+    Serial.println("🔑 Engine ALLOWED");
+  } else {
+    digitalWrite(RELAY_PIN, HIGH);
+    digitalWrite(BUZZER, LOW);
+    Serial.println("🚫 Engine BLOCKED");
+  }
+
+  Serial.println("==============================");
+}
+
+// ──────────────────────────────────────────
+// Setup
+// ──────────────────────────────────────────
+void setup() {
+
+  Serial.begin(115200);
+  delay(1000);
+
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+  pinMode(PUSH_BUTTON, INPUT_PULLUP);
+
+  // Engine blocked at startup
+  digitalWrite(RELAY_PIN, HIGH);
+  digitalWrite(BUZZER, LOW);
+
+  // Initialize I2C
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  // Initialize VL53L0X
+  if (!lox.begin()) {
+    Serial.println("❌ Failed to initialize VL53L0X");
+    while (1);
+  }
+
+  Serial.println("✅ VL53L0X Initialized");
+
+  // WiFi + ESP-NOW
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+
+  int wait = 0;
+
+  while (mac[0] == 0 && mac[1] == 0 && wait < 20) {
+    delay(200);
+    WiFi.macAddress(mac);
+    wait++;
+  }
+
+  esp_wifi_set_channel(6, WIFI_SECOND_CHAN_NONE);
+
+  Serial.println();
+  Serial.println("==============================");
+
+  if (TEST_MODE)
+    Serial.println("⚠ TEST MODE ENABLED");
+
+  Serial.print("Scooter MAC : ");
+  Serial.println(WiFi.macAddress());
+
+  Serial.println("==============================");
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW Init Failed");
+    return;
+  }
+
+  esp_now_register_recv_cb(OnDataRecv);
+
+  Serial.println("ESP-NOW Ready");
+  Serial.println("Waiting for helmet...");
+}
+
+// ──────────────────────────────────────────
+// Loop
+// ──────────────────────────────────────────
+void loop() {
+
+  // Timeout check
+  if (lastMsgTime != 0 &&
+      millis() - lastMsgTime > TIMEOUT_MS &&
+      helmetAuthorized) {
+
+    helmetAuthorized = false;
+
+    digitalWrite(RELAY_PIN, HIGH);
+    digitalWrite(BUZZER, LOW);
+
+    Serial.println("⚠ Helmet signal lost");
+    Serial.println("Engine BLOCKED");
+  }
+
+  // Not authorized
+  if (!helmetAuthorized && !TEST_MODE) {
+    digitalWrite(BUZZER, LOW);
+    delay(100);
+    return;
+  }
+
+  // Rear assist only when button is pressed
+  if (digitalRead(PUSH_BUTTON) == LOW) {
+
+    VL53L0X_RangingMeasurementData_t measure;
+
+    lox.rangingTest(&measure, false);
+
+    if (measure.RangeStatus != 4) {
+
+      float distance = measure.RangeMilliMeter / 10.0;
+
+      Serial.print("Distance: ");
+      Serial.print(distance);
+      Serial.println(" cm");
+
+      if (distance > 60) {
+
+        digitalWrite(BUZZER, LOW);
+        delay(50);
+
+      }
+      else if (distance > 40) {
+
+        digitalWrite(BUZZER, HIGH);
+        delay(500);
+        digitalWrite(BUZZER, LOW);
+        delay(500);
+
+      }
+      else if (distance > 25) {
+
+        digitalWrite(BUZZER, HIGH);
+        delay(250);
+        digitalWrite(BUZZER, LOW);
+        delay(250);
+
+      }
+      else if (distance > 15) {
+
+        digitalWrite(BUZZER, HIGH);
+        delay(100);
+        digitalWrite(BUZZER, LOW);
+        delay(100);
+
+      }
+      else {
+
+        digitalWrite(BUZZER, HIGH);
+        delay(50);
+
+      }
+
+    } else {
+
+      Serial.println("Out of range");
+      digitalWrite(BUZZER, LOW);
+    }
+
+  } else {
+
+    digitalWrite(BUZZER, LOW);
+
+  }
+
+  delay(50);
+}

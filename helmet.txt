@@ -1,0 +1,509 @@
+// ============================================
+// SMART HELMET — HELMET SIDE FINAL CODE
+// ESP32-S3
+//
+// States:
+// 0 = IDLE
+// 1 = HELMET WORN (waiting for strap)
+// 2 = READY (helmet + strap = engine allowed)
+// 3 = CRASH DETECTED (countdown)
+// 4 = SOS SENT (waiting for cancel)
+//
+// ESP-NOW: sends buzzerON = true/false
+//          to Scooter ESP32 by MAC address
+// ============================================
+
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+#include <ArduinoJson.h>
+#include <MPU6050_tockn.h>
+#include <Wire.h>
+#include <TinyGPS++.h>
+#include <HardwareSerial.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
+
+// ── WiFi Settings ─────────────────────────
+#define WIFI_SSID      "Yash"
+#define WIFI_PASSWORD  "yash9526"
+
+// ── Telegram Settings ─────────────────────
+#define BOT_TOKEN  "8792328469:AAHUQoZSGpPWcwWtOiZXQ5700fJiDYqoEWY"
+#define CHAT_ID    "1851991797"
+
+// ── Pin Definitions ───────────────────────
+#define IR_SENSOR_PIN  21
+#define STRAP_PIN      25
+#define STATUS_LED     14
+#define CANCEL_PIN     4
+#define LED_RED        5
+
+// ── MPU6050: SDA=18, SCL=19 ───────────────
+// ── GPS: TX=16 (ESP RX), RX=17 (ESP TX) ───
+
+// ── Settings ──────────────────────────────
+#define CRASH_THRESHOLD     2.5
+#define SOS_COUNTDOWN       10
+#define HELMET_OFF_DEBOUNCE 5
+
+// ── State Definitions ─────────────────────
+#define STATE_IDLE     0
+#define STATE_HELMET   1
+#define STATE_READY    2
+#define STATE_CRASH    3
+#define STATE_SOS_SENT 4
+
+// ── ESP-NOW: Scooter MAC Address ──────────
+// Step 1: Upload scooter code first
+// Step 2: Read MAC from scooter Serial Monitor
+// Step 3: Replace bytes below with actual MAC
+uint8_t scooterMAC[] = {0x28, 0x05, 0xA5, 0x31, 0x1A, 0xD0};
+
+// ── ESP-NOW: Data Structure ───────────────
+typedef struct struct_message {
+  bool buzzerON;
+} struct_message;
+
+struct_message helmetCmd;
+
+bool lastSentValue = false;
+bool espNowReady   = false;
+unsigned long lastHeartbeat = 0;
+#define HEARTBEAT_MS 5000
+
+// ── Objects ───────────────────────────────
+WiFiClientSecure client;
+UniversalTelegramBot bot(BOT_TOKEN, client);
+MPU6050 mpu(Wire);
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(1);
+
+// ── Variables ─────────────────────────────
+int currentState        = STATE_IDLE;
+unsigned long crashTime = 0;
+bool strapEverLocked    = false;
+int  helmetOffCount     = 0;
+
+// GPS
+float lastLat = 0.0;
+float lastLng = 0.0;
+bool  hadFix  = false;
+
+// IR Stability Filter
+int irTrueCount  = 0;
+int irFalseCount = 0;
+bool helmetWornStable = false;
+#define IR_STABLE_COUNT 5
+
+// Strap Stability Filter
+int strapLowCount  = 0;
+int strapHighCount = 0;
+bool strapLockedStable = false;
+#define STRAP_STABLE 5
+
+// ══════════════════════════════════════════
+// ESP-NOW Callbacks
+// ══════════════════════════════════════════
+void onDataSent(const wifi_tx_info_t *tx_info,
+                esp_now_send_status_t status) {
+  Serial.print("ESP-NOW: ");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ?
+                 "✓ Delivered" : "✗ Failed");
+}
+
+// ══════════════════════════════════════════
+// Send engine command to scooter
+// Only sends when value changes
+// ══════════════════════════════════════════
+void sendEngineCommand(bool allow, bool force = false) {
+  if (!espNowReady) return;
+  if (allow == lastSentValue && !force) return;
+
+  helmetCmd.buzzerON = allow;
+  esp_now_send(scooterMAC,
+               (uint8_t *)&helmetCmd,
+               sizeof(helmetCmd));
+
+  lastSentValue = allow;
+  lastHeartbeat = millis();
+  Serial.print("→ ESP-NOW sent: buzzerON = ");
+  Serial.println(allow ?
+    "TRUE  → Engine ALLOWED" :
+    "FALSE → Engine BLOCKED");
+}
+
+// ══════════════════════════════════════════
+void setup() {
+  Serial.begin(9600);
+
+  // ── Pin Modes ───────────────────────────
+  pinMode(IR_SENSOR_PIN, INPUT);
+  pinMode(STRAP_PIN,     INPUT_PULLUP);
+  pinMode(STATUS_LED,    OUTPUT);
+  pinMode(CANCEL_PIN,    INPUT_PULLUP);
+  pinMode(LED_RED,       OUTPUT);
+
+  digitalWrite(STATUS_LED, LOW);
+  digitalWrite(LED_RED,    LOW);
+
+  // ── Start GPS ───────────────────────────
+  gpsSerial.begin(9600, SERIAL_8N1, 16, 17);
+  Serial.println("GPS Started...");
+
+  // ── Start MPU6050 ───────────────────────
+  Wire.begin(18, 19);
+  mpu.begin();
+  Serial.println("Keep STILL for 2 seconds...");
+  delay(2000);
+  mpu.calcGyroOffsets(true);
+  Serial.println("✓ MPU6050 Ready");
+
+  // ── Connect WiFi ────────────────────────
+  Serial.print("Connecting to WiFi");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+    if (attempts > 30) {
+      Serial.println("\n✗ WiFi failed!");
+      break;
+    }
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✓ WiFi Connected!");
+    Serial.print("WiFi Channel: ");
+    Serial.println(WiFi.channel());
+    client.setInsecure();
+    bot.sendMessage(CHAT_ID,
+      "✅ Smart Helmet Online\n"
+      "Hi Arpan! All systems active.\n"
+      "Ride safe! 🏍️", "");
+  }
+
+  // ── Init ESP-NOW ────────────────────────
+  if (esp_now_init() == ESP_OK) {
+    esp_now_register_send_cb(onDataSent);
+
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, scooterMAC, 6);
+    peer.channel = WiFi.channel();
+    peer.ifidx   = WIFI_IF_STA;
+    peer.encrypt  = false;
+
+    if (esp_now_add_peer(&peer) == ESP_OK) {
+      espNowReady = true;
+      Serial.println("✓ ESP-NOW Ready");
+      Serial.print("Helmet MAC: ");
+      Serial.println(WiFi.macAddress());
+      Serial.print("Scooter MAC: ");
+      for (int i = 0; i < 6; i++) {
+        Serial.printf("%02X", scooterMAC[i]);
+        if (i < 5) Serial.print(":");
+      }
+      Serial.println();
+    } else {
+      Serial.println("✗ Failed to add peer");
+    }
+  } else {
+    Serial.println("✗ ESP-NOW Init Failed");
+  }
+
+  // Block engine on boot
+  sendEngineCommand(false);
+
+  Serial.println("✓ System Ready!");
+  Serial.println("─────────────────────────────");
+}
+
+// ══════════════════════════════════════════
+void loop() {
+
+  // ── Read GPS ────────────────────────────
+  while (gpsSerial.available()) {
+    gps.encode(gpsSerial.read());
+  }
+  if (gps.location.isValid()) {
+    lastLat = gps.location.lat();
+    lastLng = gps.location.lng();
+    hadFix  = true;
+  }
+
+  // ── Read MPU6050 ────────────────────────
+  mpu.update();
+  float accX   = mpu.getAccX();
+  float accY   = mpu.getAccY();
+  float accZ   = mpu.getAccZ();
+  float totalG = sqrt(accX*accX + accY*accY + accZ*accZ);
+
+  // ── IR Stability Filter ──────────────────
+  bool irRaw = (digitalRead(IR_SENSOR_PIN) == LOW);
+  if (irRaw) { irTrueCount++;  irFalseCount = 0; }
+  else        { irFalseCount++; irTrueCount  = 0; }
+  if (irTrueCount  >= IR_STABLE_COUNT) helmetWornStable = true;
+  if (irFalseCount >= IR_STABLE_COUNT) helmetWornStable = false;
+
+  // ── Strap Stability Filter ───────────────
+  bool strapRaw = (digitalRead(STRAP_PIN) == LOW);
+  if (strapRaw) { strapLowCount++;  strapHighCount = 0; }
+  else          { strapHighCount++; strapLowCount  = 0; }
+  if (strapLowCount  >= STRAP_STABLE) strapLockedStable = true;
+  if (strapHighCount >= STRAP_STABLE) strapLockedStable = false;
+
+  bool helmetWorn  = helmetWornStable;
+  bool strapLocked = strapLockedStable;
+  bool cancelPressed = (digitalRead(CANCEL_PIN) == LOW);
+
+  // ── Engine AND-Gate ──────────────────────
+  // Engine is allowed ONLY when BOTH helmet is worn
+  // AND strap is locked. If either one is false,
+  // engine must be OFF — no exceptions, checked
+  // every loop pass, independent of state machine
+  // debounce timers below.
+  bool engineConditionMet = (helmetWorn && strapLocked);
+
+  if (strapLocked) strapEverLocked = true;
+
+// ── Heartbeat: resend current state periodically ──
+  if (millis() - lastHeartbeat > HEARTBEAT_MS) {
+    sendEngineCommand(lastSentValue, true);
+  }
+  // ── Serial Output ───────────────────────
+  
+  Serial.println("\n==============================");
+  Serial.print("State         : ");
+  switch (currentState) {
+    case STATE_IDLE:     Serial.println("IDLE");           break;
+    case STATE_HELMET:   Serial.println("HELMET WORN");    break;
+    case STATE_READY:    Serial.println("READY");          break;
+    case STATE_CRASH:    Serial.println("CRASH DETECTED"); break;
+    case STATE_SOS_SENT: Serial.println("SOS SENT");       break;
+  }
+  Serial.print("Helmet Worn   : ");
+  Serial.println(helmetWorn  ? "✓ YES" : "✗ NO");
+  Serial.print("Strap Locked  : ");
+  Serial.println(strapLocked ? "✓ YES" : "✗ NO");
+  Serial.print("Engine OK     : ");
+  Serial.println(engineConditionMet ? "✓ YES (both met)" : "✗ NO (one or both missing)");
+  Serial.print("Total G       : ");
+  Serial.println(totalG, 2);
+  Serial.print("GPS           : ");
+  if (hadFix) {
+    Serial.print(lastLat, 6);
+    Serial.print(", ");
+    Serial.println(lastLng, 6);
+  } else {
+    Serial.println("No fix yet");
+  }
+
+  // ══════════════════════════════════════════
+  // SWITCH CASE STATE MACHINE
+  // ══════════════════════════════════════════
+
+  switch (currentState) {
+
+    // ──────────────────────────────────────
+    case STATE_IDLE:
+    // Waiting for helmet
+    // ──────────────────────────────────────
+      digitalWrite(STATUS_LED, LOW);
+      digitalWrite(LED_RED,    LOW);
+      helmetOffCount = 0;
+      sendEngineCommand(false);
+
+      Serial.println("Status: Waiting for helmet...");
+
+      if (helmetWorn) {
+        currentState = STATE_HELMET;
+        Serial.println("→ Helmet detected. Lock strap.");
+      }
+      break;
+
+    // ──────────────────────────────────────
+  case STATE_HELMET:
+  digitalWrite(STATUS_LED, LOW);
+  helmetOffCount = 0;
+  // Engine stays blocked here regardless — strap not
+  // confirmed locked yet, so AND-gate is false.
+  sendEngineCommand(false);
+
+      Serial.println("Status: Helmet worn. Lock strap.");
+
+      if (!helmetWorn) {
+        currentState    = STATE_IDLE;
+        strapEverLocked = false;
+        Serial.println("→ Helmet removed. Back to IDLE.");
+        break;
+      }
+
+      if (strapLocked) {
+        currentState    = STATE_READY;
+        strapEverLocked = true;
+        helmetOffCount  = 0;
+        Serial.println("→ Strap locked! Engine ALLOWED.");
+
+        bot.sendMessage(CHAT_ID,
+          "🪖 Helmet authenticated!\n"
+          "Engine is now allowed.\n"
+          "Ride safe! 🏍️", "");
+      }
+      break;
+
+    // ──────────────────────────────────────
+    case STATE_READY:
+    // Helmet + strap = engine allowed
+    // Crash detection active
+    // ──────────────────────────────────────
+    {
+      // ── Strict AND check, every cycle ────
+      // Engine is sent TRUE only if BOTH conditions
+      // hold right now. The instant either one drops,
+      // sendEngineCommand(false) fires on this same
+      // pass — no waiting for the debounce counter
+      // below, which only governs the STATE transition
+      // back to IDLE, not the engine signal itself.
+      if (engineConditionMet) {
+        digitalWrite(STATUS_LED, HIGH);
+        sendEngineCommand(true);
+        Serial.println("Status: READY — Engine ALLOWED");
+        Serial.println("Crash detection: ACTIVE");
+      } else {
+        digitalWrite(STATUS_LED, LOW);
+        sendEngineCommand(false);
+        Serial.println("Status: Helmet/strap condition broken — Engine BLOCKED");
+      }
+
+      // Helmet removal debounce (controls state transition only)
+      if (!helmetWorn) {
+        helmetOffCount++;
+        Serial.print("Helmet off count: ");
+        Serial.print(helmetOffCount);
+        Serial.print(" / ");
+        Serial.println(HELMET_OFF_DEBOUNCE);
+      } else {
+        helmetOffCount = 0;
+      }
+
+      if (helmetOffCount >= HELMET_OFF_DEBOUNCE) {
+        helmetOffCount  = 0;
+        currentState    = STATE_IDLE;
+        strapEverLocked = false;
+        digitalWrite(STATUS_LED, LOW);
+        sendEngineCommand(false);
+        Serial.println("→ Helmet removed. Engine BLOCKED.");
+
+        bot.sendMessage(CHAT_ID,
+          "⚠️ Helmet removed!\n"
+          "Engine has been blocked.", "");
+        break;
+      }
+
+      // If strap opens while helmet still on, drop back
+      // to STATE_HELMET so engine stays blocked until
+      // strap is locked again.
+      if (helmetWorn && !strapLocked) {
+        currentState = STATE_HELMET;
+        Serial.println("→ Strap unlocked. Engine BLOCKED until re-locked.");
+        break;
+      }
+
+      // Crash detection — only when helmet worn AND strap locked
+      if (totalG > CRASH_THRESHOLD && engineConditionMet) {
+        currentState = STATE_CRASH;
+        crashTime    = millis();
+        digitalWrite(LED_RED, HIGH);
+        sendEngineCommand(false);
+        Serial.println("→ CRASH DETECTED!");
+
+        bot.sendMessage(CHAT_ID,
+          "⚠️ CRASH DETECTED!\n"
+          "Press button to cancel.\n"
+          "SOS in 10 seconds...", "");
+      }
+    }
+      break;
+
+    // ──────────────────────────────────────
+    case STATE_CRASH:
+    // Countdown to SOS
+    // ──────────────────────────────────────
+      digitalWrite(LED_RED, HIGH);
+      sendEngineCommand(false);
+
+      {
+        int secondsLeft = SOS_COUNTDOWN -
+                         (int)((millis() - crashTime) / 1000);
+
+        Serial.print("SOS in: ");
+        Serial.print(secondsLeft);
+        Serial.println(" seconds...");
+
+        if (cancelPressed) {
+          currentState   = STATE_READY;
+          helmetOffCount = 0;
+          digitalWrite(LED_RED, LOW);
+          Serial.println("→ SOS CANCELLED. Back to READY.");
+
+          bot.sendMessage(CHAT_ID,
+            "✅ SOS Cancelled.\n"
+            "Arpan is okay! 👍", "");
+
+          delay(1000);
+          break;
+
+      
+      
+        }
+
+        if (secondsLeft <= 0) {
+          sendSOS();
+          currentState = STATE_SOS_SENT;
+          Serial.println("→ SOS SENT.");
+        }
+      }
+      break;
+
+    // ──────────────────────────────────────
+   
+  }
+
+  delay(200);
+}
+
+// ══════════════════════════════════════════
+void sendSOS() {
+  Serial.println("Sending SOS...");
+
+  String message = "🚨 *ACCIDENT ALERT!*\n";
+  message += "━━━━━━━━━━━━━━━━━━\n";
+  message += "👤 Rider: Arpan\n";
+  message += "⚠️ No response for 10 seconds!\n";
+  message += "🏥 Rider may be injured!\n";
+  message += "━━━━━━━━━━━━━━━━━━\n";
+
+  if (hadFix) {
+    message += "📍 *Last Known Location:*\n";
+    message += "https://maps.google.com/?q=";
+    message += String(lastLat, 6);
+    message += ",";
+    message += String(lastLng, 6);
+    message += "\n";
+    message += "🛰️ Satellites: ";
+    message += String(gps.satellites.value());
+    message += "\n";
+  } else {
+    message += "📍 No GPS location available\n";
+    message += "GPS fix was never obtained\n";
+  }
+
+  message += "━━━━━━━━━━━━━━━━━━\n";
+  message += "🆘 Call emergency services immediately!";
+
+  bot.sendMessage(CHAT_ID, message, "Markdown");
+  Serial.println("✓ SOS Sent!");
+}
